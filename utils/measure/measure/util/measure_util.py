@@ -101,8 +101,12 @@ class MeasureUtil:
         return True
 
     def _take_resistance_reading(self) -> float | None:
-        result = self.power_meter.get_power(include_voltage=True)
-        power, voltage = result.power, result.voltage
+        try:
+            result = self.power_meter.get_power(include_voltage=True)
+            power, voltage = result.power, result.voltage
+        except PowerMeterError as error:
+            _LOGGER.warning("Measurement failed: %s", error)
+            return None
 
         if voltage < 1:
             _LOGGER.error("Error during measurement: Voltage measurement returned zero. Aborting measurement.")
@@ -119,8 +123,12 @@ class MeasureUtil:
     def _take_dummy_load_power_reading(self) -> float | None:
         self._validate_voltage_support()
 
-        result = self.power_meter.get_power(include_voltage=True)
-        power, voltage = result.power, result.voltage
+        try:
+            result = self.power_meter.get_power(include_voltage=True)
+            power, voltage = result.power, result.voltage
+        except PowerMeterError as error:
+            _LOGGER.warning("Measurement failed: %s", error)
+            return None
 
         if voltage < 1:
             _LOGGER.error("Error during measurement: Voltage measurement returned zero. Aborting measurement.")
@@ -140,7 +148,11 @@ class MeasureUtil:
         return power
 
     def _take_power_reading(self) -> float | None:
-        power = self.power_meter.get_power().power
+        try:
+            power = self.power_meter.get_power().power
+        except PowerMeterError as error:
+            _LOGGER.warning("Measurement failed: %s", error)
+            return None
         if round(power, 2) == 0:
             _LOGGER.warning("Invalid measurement. Consumption: %.2f W; ignoring", power)
             return None
