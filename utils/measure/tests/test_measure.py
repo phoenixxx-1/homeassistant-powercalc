@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import inquirer
 from inquirer import events
@@ -24,6 +24,7 @@ from measure.controller.charging.const import ChargingDeviceType
 from measure.controller.light.const import LutMode
 from measure.measure import Measure
 from measure.powermeter.dummy import DummyPowerMeter
+from measure.powermeter.errors import ApiConnectionError
 from measure.powermeter.powermeter import PowerMeasurementResult, PowerMeter
 from measure.runner.const import (
     QUESTION_CHARGING_DEVICE_TYPE,
@@ -402,3 +403,84 @@ def test_ask_questions_with_mode_converts_to_lut_mode_set(mock_config_factory: M
         answers = measure.ask_questions(questions)
 
     assert answers[QUESTION_MODE] == {LutMode.HS}
+
+
+class ErrorSequencePowerMeter(PowerMeter):
+    def __init__(self, responses: list[PowerMeasurementResult | Exception]) -> None:
+        self.responses = responses
+        self.index = 0
+
+    def get_power(self, include_voltage: bool = False) -> PowerMeasurementResult:
+        res = self.responses[self.index]
+        self.index += 1
+        if isinstance(res, Exception):
+            raise res
+        return res
+
+    def has_voltage_support(self) -> bool:
+        return True
+
+    def process_answers(self, answers: dict[str, Any]) -> None:
+        pass
+
+
+@patch("time.sleep", return_value=None)
+@patch("time.time")
+def test_take_average_measurement_retries_on_error(
+    mock_time: MagicMock,
+    mock_sleep: MagicMock,
+    mock_config_factory: MockConfigFactory,
+) -> None:
+    mock_config = mock_config_factory()
+    power_meter = ErrorSequencePowerMeter(
+        [
+            PowerMeasurementResult(power=10.0, updated=1.0, voltage=230.0),
+            ApiConnectionError("Connection timeout"),
+            PowerMeasurementResult(power=20.0, updated=2.0, voltage=230.0),
+        ],
+    )
+
+    def time_side_effect() -> float:
+        if power_meter.index >= len(power_meter.responses):
+            return 100.0
+        return 0.0
+
+    mock_time.side_effect = time_side_effect
+
+    measure_util = MeasureUtil(power_meter, mock_config)
+    result = measure_util.take_average_measurement(duration=2)
+    assert result.power == 15.0  # Average of 10.0 and 20.0
+    assert power_meter.index == 3  # 1st success, 1st failure, 2nd success (on retry)
+
+
+@patch("time.sleep", return_value=None)
+@patch("time.time")
+def test_take_average_measurement_raises_after_max_retries(
+    mock_time: MagicMock,
+    mock_sleep: MagicMock,
+    mock_config_factory: MockConfigFactory,
+) -> None:
+    mock_config = mock_config_factory(config_values={"max_retries": 3})
+    power_meter = ErrorSequencePowerMeter(
+        [
+            PowerMeasurementResult(power=10.0, updated=1.0, voltage=230.0),
+            ApiConnectionError("Connection timeout"),
+            ApiConnectionError("Connection timeout"),
+            ApiConnectionError("Connection timeout"),
+            ApiConnectionError("Connection timeout"),
+        ],
+    )
+
+    def time_side_effect() -> float:
+        if power_meter.index >= len(power_meter.responses):
+            return 100.0
+        return 0.0
+
+    mock_time.side_effect = time_side_effect
+
+    measure_util = MeasureUtil(power_meter, mock_config)
+    with pytest.raises(ApiConnectionError):
+        measure_util.take_average_measurement(duration=2)
+
+    assert power_meter.index == 5  # 1st success + 4 failures (exceeds max_retries of 3)
+

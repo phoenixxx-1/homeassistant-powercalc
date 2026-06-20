@@ -102,13 +102,30 @@ class MeasureUtil:
         voltages: list[float] = []
 
         first_measurement = True
-
+        consecutive_errors = 0
         while (time.time() - start_time) < duration:
             if not first_measurement and not self._sleep_before_next_average_reading(start_time, duration):
                 break
             first_measurement = False
 
-            result = self._take_average_measurement_reading(measure_resistance)
+            try:
+                result = self._take_average_measurement_reading(measure_resistance)
+                consecutive_errors = 0
+            except PowerMeterError as error:
+                consecutive_errors += 1
+                if consecutive_errors > self.config.max_retries:
+                    _LOGGER.error("Too many consecutive power meter connection errors. Aborting.")
+                    raise error
+
+                _LOGGER.warning(
+                    "Connection error while taking reading (%d/%d): %s. Retrying in %s seconds...",
+                    consecutive_errors,
+                    self.config.max_retries,
+                    error,
+                    self.config.sleep_time,
+                )
+                continue
+
             if result is None:
                 continue
 
